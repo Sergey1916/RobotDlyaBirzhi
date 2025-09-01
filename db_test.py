@@ -203,6 +203,8 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
 cur.executemany(insert_query, to_insert)
 conn.commit()
 
+print("   ")
 print(f"{len(to_insert)} экстремумов сохранено в БД.")
 print("   ")
 print("Fixed extremes:", fixed_ex)
+print("   ")
