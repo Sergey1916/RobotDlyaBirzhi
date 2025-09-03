@@ -1,10 +1,10 @@
-import psycopg
+import psycopg2
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
 # Подключение к БД
-conn = psycopg.connect(
+conn = psycopg2.connect(
     dbname="робот",
     user="postgres",
     password="111",
@@ -198,9 +198,9 @@ for ex in extremes:
 insert_query = """
 INSERT INTO bf_sr2_1
 (trend_id, direction, type, ex, cex, datetime, timestamp, status, definition)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES %s
 """
-cur.executemany(insert_query, to_insert)
+execute_values(cur, insert_query, to_insert)
 conn.commit()
 
 print("   ")
@@ -208,3 +208,4 @@ print(f"{len(to_insert)} экстремумов сохранено в БД.")
 print("   ")
 print("Fixed extremes:", fixed_ex)
 print("   ")
+
