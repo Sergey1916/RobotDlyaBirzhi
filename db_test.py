@@ -1,11 +1,11 @@
 import psycopg2
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
+from psycopg2.extras import execute_values
 
 # Подключение к БД
 conn = psycopg2.connect(
-    dbname="робот",
+    dbname="robot",
     user="postgres",
     password="111",
     host="localhost",
@@ -38,7 +38,7 @@ min_ex_amp = params[5]
 # UNIX секунды
 start_unix = int(start_timestamp.timestamp())
 end_unix = int(end_timestamp.timestamp())
-
+start_ts_fixed = 1522332000
 print("Параметры из БД:")
 print(f"start_timestamp = {start_timestamp}")
 print(f"end_timestamp   = {end_timestamp}")
@@ -53,32 +53,19 @@ SELECT
     ct.mts AS timestamp,
     ct.open, ct.high, ct.low, ct.close
 FROM bf_candles_ethusd ct
-WHERE ct.mts >= %s - %s * 86400
+WHERE ct.mts >= %s
   AND ct.mts <= %s
 ORDER BY ct.mts;
 """
-cur.execute(query, (start_unix, direction_days, end_unix))
+cur.execute(query, (start_ts_fixed, end_unix))
 rows = cur.fetchall()
 
 candles = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close"])
 candles["datetime"] = pd.to_datetime(candles["timestamp"], unit='s')
 
 # EMA
-def calculate_ema(series, length):
-    ema_values = []
-    k = 2 / (length + 1)
-    for i in range(len(series)):
-        if i < length * 2:
-            ema_values.append(None)
-        else:
-            back_closes = series[i - (length * 2):i + 1].to_list()
-            a = sum(back_closes) / length
-            for j in range(length, -1, -1):
-                a = back_closes[j] * k + a * (1 - k)
-            ema_values.append(a)
-    return ema_values
+candles["ema"] = candles["close"].ewm(span=ema_length, adjust=False).mean()
 
-candles["ema"] = calculate_ema(candles["close"], ema_length)
 
 # Индексы начала расчета
 pre_start = start_timestamp - timedelta(days=direction_days)
@@ -165,7 +152,7 @@ for idx in range(start_calc_index + 1, len(candles)):
             })
 # Создание таблицы экстремумов
 cur.execute("""
-CREATE TABLE IF NOT EXISTS bf_sr2_1 (
+CREATE TABLE IF NOT EXISTS bf_sr2_5 (
     id SERIAL PRIMARY KEY,
     trend_id INT,
     direction TEXT,
@@ -196,7 +183,7 @@ for ex in extremes:
     ))
 
 insert_query = """
-INSERT INTO bf_sr2_1
+INSERT INTO bf_sr2_5
 (trend_id, direction, type, ex, cex, datetime, timestamp, status, definition)
 VALUES %s
 """
@@ -208,4 +195,3 @@ print(f"{len(to_insert)} экстремумов сохранено в БД.")
 print("   ")
 print("Fixed extremes:", fixed_ex)
 print("   ")
-
