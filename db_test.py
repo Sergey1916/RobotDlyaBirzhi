@@ -1,5 +1,8 @@
+import psycopg
 import psycopg2
 import pandas as pd
+import numpy as np
+import matplotlib as plt
 from datetime import datetime, timedelta
 from psycopg2.extras import execute_values
 
@@ -38,7 +41,6 @@ min_ex_amp = params[5]
 # UNIX секунды
 start_unix = int(start_timestamp.timestamp())
 end_unix = int(end_timestamp.timestamp())
-start_ts_fixed = 1522332000
 print("Параметры из БД:")
 print(f"start_timestamp = {start_timestamp}")
 print(f"end_timestamp   = {end_timestamp}")
@@ -47,7 +49,8 @@ print(f"direction_days  = {direction_days}")
 print(f"ema_length      = {ema_length}")
 print(f"min_ex_amp      = {min_ex_amp}")
 
-# Свечи
+
+# Получение свечей
 query = """
 SELECT
     ct.mts AS timestamp,
@@ -57,8 +60,9 @@ WHERE ct.mts >= %s
   AND ct.mts <= %s
 ORDER BY ct.mts;
 """
-cur.execute(query, (start_ts_fixed, end_unix))
+cur.execute(query, (start_unix, end_unix))  # ЗАМЕНЕНО
 rows = cur.fetchall()
+
 
 candles = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close"])
 candles["datetime"] = pd.to_datetime(candles["timestamp"], unit='s')
@@ -152,7 +156,7 @@ for idx in range(start_calc_index + 1, len(candles)):
             })
 # Создание таблицы экстремумов
 cur.execute("""
-CREATE TABLE IF NOT EXISTS bf_sr2_5 (
+CREATE TABLE IF NOT EXISTS bf_sr2_8 (
     id SERIAL PRIMARY KEY,
     trend_id INT,
     direction TEXT,
@@ -183,7 +187,7 @@ for ex in extremes:
     ))
 
 insert_query = """
-INSERT INTO bf_sr2_5
+INSERT INTO bf_sr2_8
 (trend_id, direction, type, ex, cex, datetime, timestamp, status, definition)
 VALUES %s
 """
