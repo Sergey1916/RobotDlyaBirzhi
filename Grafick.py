@@ -1,124 +1,84 @@
 import psycopg2
+import mysql.connector
 import pandas as pd
 import plotly.graph_objects as go
 
-limit = 300
-start_ts = 1522332000  # Начало графика (29 марта 2018)
-
-conn = psycopg2.connect(
+# Подключение к PostgreSQL
+conn_pg = psycopg2.connect(
     dbname="robot",
     user="postgres",
     password="111",
     host="localhost",
     port="5432"
 )
-cur = conn.cursor()
+cur_pg = conn_pg.cursor()
 
-# Получение параметров
-cur.execute("""
-    SELECT
-        start_timestamp,
-        end_timestamp,
-        pair,
-        direction_days,
-        ema_length,
-        min_ex_amp
-    FROM bf_algo_sr2_ethusd_params
-    WHERE id = 1
+# Старые экстремумы из PostgreSQL
+cur_pg.execute("""
+    SELECT timestamp, ex
+    FROM bf_sr2_8
+    WHERE ex IS NOT NULL
+    ORDER BY timestamp ASC
 """)
-params = cur.fetchone()
+extremes_new = cur_pg.fetchall()
 
-start_timestamp = params[0]
-end_timestamp = params[1]
-pair = params[2]
-direction_days = params[3]
-ema_length = params[4]
-min_ex_amp = params[5]
+# Подключение к MySQL
+conn_mysql = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="12345678",
+    database="myydb"
+)
+cur_mysql = conn_mysql.cursor()
 
-# Выборка свечей
-cur.execute("""
-    SELECT mts, open, high, low, close
-    FROM bf_candles_ethusd
-    WHERE mts >= %s
-    ORDER BY mts ASC
-    LIMIT %s
-""", (start_ts, limit))
-candles = cur.fetchall()
-
-# Выборка новы экстремумов в диапазоне свечей
-cur.execute("""
+# Новые экстремумы из MySQL
+cur_mysql.execute("""
     SELECT timestamp, ex
-    FROM bf_sr2_4
+    FROM bf_sr2_extremes_ethusd
     WHERE ex IS NOT NULL
-      AND timestamp BETWEEN %s AND %s
     ORDER BY timestamp ASC
-""", (candles[0][0], candles[-1][0]))
-extremes_new = cur.fetchall()
+""")
+extremes_old = cur_mysql.fetchall()
 
-# Выборка старых экстремумов в диапазоне свечей
-cur.execute("""
-    SELECT timestamp, ex
-    FROM bf_sr2_sit_extremes_ethusd
-    WHERE ex IS NOT NULL
-      AND timestamp BETWEEN %s AND %s
-    ORDER BY timestamp ASC
-""", (candles[0][0], candles[-1][0]))
-extremes_old = cur.fetchall()
+# Закрываем соединения
+cur_pg.close()
+conn_pg.close()
 
-cur.close()
-conn.close()
+cur_mysql.close()
+conn_mysql.close()
 
-df_candles = pd.DataFrame(candles, columns=['mts', 'Open', 'High', 'Low', 'Close'])
-df_candles['Date'] = pd.to_datetime(df_candles['mts'], unit='s')
+# DataFrame для PostgreSQL
+df_extremes_new = pd.DataFrame(extremes_new, columns=['timestamp', 'ex'])
+df_extremes_new['Date'] = pd.to_datetime(df_extremes_new['timestamp'], unit='s')
 
-df_candles["EMA"] = df_candles["Close"].ewm(span=ema_length, adjust=False).mean()
-
+# DataFrame для MySQL
 df_extremes_old = pd.DataFrame(extremes_old, columns=['timestamp', 'ex'])
 df_extremes_old['Date'] = pd.to_datetime(df_extremes_old['timestamp'], unit='s')
 
-df_extremes_new = pd.DataFrame(extremes_new, columns=['timestamp', 'ex'])
-df_extremes_new['Date'] = pd.to_datetime(df_extremes_new['timestamp'], unit='s')
+count_old = len(df_extremes_old)
+count_new = len(df_extremes_new)
 
 # График
 fig = go.Figure()
 
-# Свечи
-fig.add_trace(go.Candlestick(
-    x=df_candles['Date'],
-    open=df_candles['Open'],
-    high=df_candles['High'],
-    low=df_candles['Low'],
-    close=df_candles['Close'],
-    name='Свечи'
-))
-
-# Экстремумы
 fig.add_trace(go.Scatter(
     x=df_extremes_old['Date'],
     y=df_extremes_old['ex'],
     mode='markers',
-    marker=dict(color='red', size=20),
-    name='Экстремумы старые'
+    marker=dict(color='red', size=10),
+    name=f'Старые Экстремумф ({count_old})'
 ))
 
 fig.add_trace(go.Scatter(
     x=df_extremes_new['Date'],
     y=df_extremes_new['ex'],
     mode='markers',
-    marker=dict(color='blue', size=16, symbol="diamond"),
-    name='Экстремумы новые'
-))
-# EMA
-fig.add_trace(go.Scatter(
-    x=df_candles['Date'],
-    y=df_candles['EMA'],
-    mode='lines',
-    line=dict(color='yellow', width=2),
-    name=f'EMA {ema_length}'
+    marker=dict(color='blue', size=4, symbol="diamond"),
+    name=f'Экстремумы мои ({count_new})'
 ))
 
 fig.update_layout(
-    title=f'Свечи + экстремумы + EMA {ema_length} + {pair}',
+    title=f'Сравнение всех экстремумов: старые = {count_old}, новые = {count_new}',
     xaxis_title='Время',
     yaxis_title='Цена',
     template='plotly_dark'
