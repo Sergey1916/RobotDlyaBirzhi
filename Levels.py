@@ -105,7 +105,7 @@ for i, ex in extremes.iterrows():
         level_id += 1
         current_level = make_level(ex, "trend_change", level_id, level_type, trend_direction)
         levels.append(current_level)
-        print(f"🔄 Смена тренда → UP @ {ex['datetime']}, новый уровень {level_type}")
+        print(f"Смена тренда → UP @ {ex['datetime']}, новый уровень {level_type}")
         previous_ex = ex
         continue
 
@@ -115,7 +115,7 @@ for i, ex in extremes.iterrows():
         level_id += 1
         current_level = make_level(ex, "trend_change", level_id, level_type, trend_direction)
         levels.append(current_level)
-        print(f"🔄 Смена тренда → DOWN @ {ex['datetime']}, новый уровень {level_type}")
+        print(f"Смена тренда → DOWN @ {ex['datetime']}, новый уровень {level_type}")
         previous_ex = ex
         continue
 
