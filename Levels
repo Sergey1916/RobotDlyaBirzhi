@@ -1,0 +1,232 @@
+import pandas as pd
+import numpy as np
+import psycopg2
+from psycopg2.extras import execute_values
+
+margin = 3
+
+pg_conn = psycopg2.connect(
+    dbname="robot",
+    user="postgres",
+    password="111",
+    host="localhost",
+    port="5432"
+)
+pg_cur = pg_conn.cursor()
+
+# Экстремумы
+pg_cur.execute("SELECT * FROM bf_sr2_8 ORDER BY timestamp;")
+cols = [desc[0] for desc in pg_cur.description]
+extremes = pd.DataFrame(pg_cur.fetchall(), columns=cols)
+extremes.columns = extremes.columns.str.lower()  # нормализуем имена колоно
+
+print(f"Загружено экстремумов: {len(extremes)}")
+
+# Параметры
+pg_cur.execute("SELECT start_timestamp FROM bf_algo_sr2_ethusd_params WHERE id = 1")
+start_ts = pg_cur.fetchone()[0]
+
+# Определяем ближайший экстремум по времени
+if "cex" not in extremes.columns:
+    extremes["cex"] = np.arange(len(extremes))
+
+start_point_index = extremes.loc[
+    (extremes["timestamp"] - start_ts).abs().idxmin(),
+    "cex"
+]
+print(f"start_point_index = {start_point_index}")
+
+# Определяем экстремумы ДО точки старта
+ext_before = extremes[extremes["timestamp"] <= start_ts]
+if len(ext_before) < 2:
+    print("Недостаточно экстремумов до старта, берём первые 5.")
+    ext_before = extremes.head(5)
+
+min_ex = ext_before.loc[ext_before["ex"].idxmin()]
+max_ex = ext_before.loc[ext_before["ex"].idxmax()]
+
+if max_ex["datetime"] < min_ex["datetime"]:
+    trend_direction = "down"
+    level_type = "support"
+    base_ex = min_ex
+else:
+    trend_direction = "up"
+    level_type = "resistance"
+    base_ex = max_ex
+
+print(f"Первый тренд: {trend_direction.upper()}, уровень: {level_type}")
+
+def make_level(base_ex, create_reason, level_id, level_type, trend_direction):
+    level_value = base_ex["ex"]
+    top = level_value * (1 + margin / 100)
+    bottom = level_value * (1 - margin / 100)
+    return {
+        "level_id": level_id,
+        "type": level_type,
+        "kind": trend_direction,
+        "status": "inactive",
+        "level_value": level_value,
+        "top": top,
+        "bottom": bottom,
+        "amp": margin,
+        "start_ts": int(base_ex["timestamp"]),
+        "start_date": str(base_ex["datetime"]),
+        "end_ts": None,
+        "end_date": None,
+        "contact": None,
+        "cancel_id": None,
+        "create_reason": create_reason,
+        "complete_reason": None,
+        "border": 0,
+        "ex_qty": 1,
+        "ex_start": int(base_ex["cex"]) if "cex" in base_ex else int(base_ex.name),
+        "ex_start_date": str(base_ex["datetime"]),
+        "choose_details": None
+    }
+
+# Создание первого уровня
+levels = []
+level_id = 1
+current_level = make_level(base_ex, "new", level_id, level_type, trend_direction)
+levels.append(current_level)
+print(f"Создан первый уровень: ex={base_ex['ex']:.2f}, top={current_level['top']:.2f}, bottom={current_level['bottom']:.2f}")
+
+previous_ex = base_ex
+
+# Основной цикл по экстремумам
+for i, ex in extremes.iterrows():
+    if ex["timestamp"] <= base_ex["timestamp"]:
+        continue
+
+    # Смена тренда
+    if trend_direction == "down" and ex["type"] == "max":
+        trend_direction = "up"
+        level_type = "resistance"
+        level_id += 1
+        current_level = make_level(ex, "trend_change", level_id, level_type, trend_direction)
+        levels.append(current_level)
+        print(f"🔄 Смена тренда → UP @ {ex['datetime']}, новый уровень {level_type}")
+        previous_ex = ex
+        continue
+
+    elif trend_direction == "up" and ex["type"] == "min":
+        trend_direction = "down"
+        level_type = "support"
+        level_id += 1
+        current_level = make_level(ex, "trend_change", level_id, level_type, trend_direction)
+        levels.append(current_level)
+        print(f"🔄 Смена тренда → DOWN @ {ex['datetime']}, новый уровень {level_type}")
+        previous_ex = ex
+        continue
+
+    # Проверяем SHIFT / TRANSFER
+    shift_or_transfer = None
+
+    if trend_direction == "down" and ex["type"] == "min":
+        if ex["ex"] < current_level["level_value"]:
+            if ex["ex"] > current_level["bottom"]:
+                shift_or_transfer = "shift"
+            else:
+                shift_or_transfer = "transfer"
+
+    elif trend_direction == "up" and ex["type"] == "max":
+        if ex["ex"] > current_level["level_value"]:
+            if ex["ex"] < current_level["top"]:
+                shift_or_transfer = "shift"
+            else:
+                shift_or_transfer = "transfer"
+
+    if shift_or_transfer:
+        # Завершаем текущий уровень
+        current_level["end_ts"] = int(ex["timestamp"])
+        current_level["end_date"] = str(ex["datetime"])
+        current_level["complete_reason"] = shift_or_transfer
+        print(f"{shift_or_transfer.upper()} уровня: ex={ex['ex']:.2f}, дата={ex['datetime']}")
+
+        # Создаём новый уровень
+        new_level = make_level(ex, shift_or_transfer, level_id, level_type, trend_direction)
+        levels.append(new_level)
+        current_level = new_level
+
+    previous_ex = ex
+
+# Сохранение
+pg_cur.execute("""
+CREATE TABLE IF NOT EXISTS bf_levels1 (
+    id SERIAL PRIMARY KEY,
+    level_id INT,
+    type VARCHAR(20),
+    kind VARCHAR(20),
+    status VARCHAR(20),
+    level_value DOUBLE PRECISION,
+    top DOUBLE PRECISION,
+    bottom DOUBLE PRECISION,
+    amp DOUBLE PRECISION,
+    start_ts BIGINT,
+    start_date VARCHAR(20),
+    end_ts BIGINT,
+    end_date VARCHAR(20),
+    contact INT,
+    cancel_id INT,
+    create_reason VARCHAR(255),
+    complete_reason VARCHAR(255),
+    border SMALLINT,
+    ex_qty INT,
+    ex_start INT,
+    ex_start_date VARCHAR(20),
+    choose_details VARCHAR(255)
+)
+""")
+pg_conn.commit()
+
+pg_cur.execute("TRUNCATE bf_levels1;")
+pg_conn.commit()
+
+def safe(v):
+    if isinstance(v, (np.int64, np.int32, np.int16)):
+        return int(v)
+    if isinstance(v, (np.float64, np.float32)):
+        return float(v)
+    if pd.isna(v):
+        return None
+    return v
+
+to_insert = [(
+    safe(lvl["level_id"]),
+    safe(lvl["type"]),
+    safe(lvl["kind"]),
+    safe(lvl["status"]),
+    safe(lvl["level_value"]),
+    safe(lvl["top"]),
+    safe(lvl["bottom"]),
+    safe(lvl["amp"]),
+    safe(lvl["start_ts"]),
+    safe(lvl["start_date"]),
+    safe(lvl["end_ts"]),
+    safe(lvl["end_date"]),
+    safe(lvl["contact"]),
+    safe(lvl["cancel_id"]),
+    safe(lvl["create_reason"]),
+    safe(lvl["complete_reason"]),
+    safe(lvl["border"]),
+    safe(lvl["ex_qty"]),
+    safe(lvl["ex_start"]),
+    safe(lvl["ex_start_date"]),
+    safe(lvl["choose_details"])
+) for lvl in levels]
+
+insert_query = """
+INSERT INTO bf_levels1 (
+    level_id, type, kind, status, level_value, top, bottom, amp,
+    start_ts, start_date, end_ts, end_date, contact, cancel_id,
+    create_reason, complete_reason, border, ex_qty, ex_start,
+    ex_start_date, choose_details
+) VALUES %s
+"""
+execute_values(pg_cur, insert_query, to_insert)
+pg_conn.commit()
+
+print(f"Уровни успешно сохранены в PostgreSQL: {len(levels)}")
+
+pg_cur.close()
+pg_conn.close()
